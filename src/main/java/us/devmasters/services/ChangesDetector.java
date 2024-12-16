@@ -25,6 +25,7 @@ public class ChangesDetector {
     private final MigrationWriter migrationWriter;
     private final String migrationPath;
     private final SqlGenerator sqlGenerator;
+    private  Connection connection;
 
     public ChangesDetector(Properties dbProperties, MigrationWriter migrationWriter, String migrationPath, SqlGenerator sqlGenerator) {
         this.dbProperties = dbProperties;
@@ -35,7 +36,7 @@ public class ChangesDetector {
     }
     private void loadMetaData()
     {
-        Connection connection=getDbConnection(dbProperties);
+        connection=getDbConnection(dbProperties);
         if(connection==null)
             System.exit(0);
         try {
@@ -44,15 +45,15 @@ public class ChangesDetector {
         }catch (SQLException sqlException)
         {
             logger.error("Unable to load DB meta data",sqlException);
-            System.exit(0);
+            cleanUpExit(0);
         }
     }
 
     private Connection getDbConnection(Properties dbProperties)
     {
         String url=dbProperties.getProperty("url");
-        try( Connection connection=DriverManager.getConnection(url,dbProperties)){
-            return connection;
+        try{
+            return DriverManager.getConnection(url,dbProperties);
         }catch (SQLException sqlException)
         {
             logger.error("Unable to connect to db at url {} ",url,sqlException);
@@ -60,7 +61,16 @@ public class ChangesDetector {
         return null;
     }
 
-
+    private void cleanUpExit(int status)
+    {
+        if(connection!=null)
+            try {
+                connection.close();
+            } catch (SQLException e) {
+                logger.error("Unable to close connect with DB",e);
+            }
+        System.exit(status);
+    }
     public void detect(String entitiesPath)
     {
         if(!Files.isDirectory(Paths.get(entitiesPath))) {
@@ -69,13 +79,14 @@ public class ChangesDetector {
         }
         Stream.of(new File(entitiesPath).listFiles())
                 .filter(file -> file.getName().endsWith(".class"))
-                .forEach(cClass-> doEntityDirtyCheck(entitiesPath,cClass.getName()));
+                .forEach(cClass-> doEntityDirtyCheck(entitiesPath,cClass.getName().split("\\.")[0]));
+        cleanUpExit(1);
     }
 
     public void doEntityDirtyCheck(String entitiesPath, String fileName) {
         URL[] urls ;
         try{
-            urls=new URL[]{URI.create(entitiesPath).toURL()};
+            urls=new URL[]{Paths.get(entitiesPath).toUri().toURL()};
         }catch (MalformedURLException malformedURLException)
         {
             logger.error("Unable to construct a url from path {}",entitiesPath,malformedURLException);
@@ -97,7 +108,7 @@ public class ChangesDetector {
         }catch (Exception exception)
         {
             logger.error("Unable to build actions due to ",exception);
-            System.exit(0);
+            cleanUpExit(0);
         }
     }
 
