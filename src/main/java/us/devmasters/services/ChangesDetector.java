@@ -4,15 +4,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.MalformedURLException;
-import java.net.URI;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.*;
 import java.util.Properties;
-import java.util.stream.Stream;
 
 import static us.devmasters.services.Utils.isEntity;
 
@@ -26,12 +26,21 @@ public class ChangesDetector {
     private final String migrationPath;
     private final SqlGenerator sqlGenerator;
     private  Connection connection;
+    private boolean testENV=false;
 
     public ChangesDetector(Properties dbProperties, MigrationWriter migrationWriter, String migrationPath, SqlGenerator sqlGenerator) {
         this.dbProperties = dbProperties;
         this.migrationWriter = migrationWriter;
         this.migrationPath = migrationPath;
         this.sqlGenerator = sqlGenerator;
+        loadMetaData();
+    }
+    public ChangesDetector(Properties dbProperties, MigrationWriter migrationWriter, String migrationPath, SqlGenerator sqlGenerator,boolean testENV) {
+        this.dbProperties = dbProperties;
+        this.migrationWriter = migrationWriter;
+        this.migrationPath = migrationPath;
+        this.sqlGenerator = sqlGenerator;
+        this.testENV=testENV;
         loadMetaData();
     }
     private void loadMetaData()
@@ -69,21 +78,46 @@ public class ChangesDetector {
             } catch (SQLException e) {
                 logger.error("Unable to close connect with DB",e);
             }
-        System.exit(status);
+        if(!testENV)
+            System.exit(status);
     }
-    public void detect(String entitiesPath)
+    public void detect(ProjectMetaData projectMetaData)
     {
-        if(!Files.isDirectory(Paths.get(entitiesPath))) {
-            logger.error("Not a directory :{}", entitiesPath);
+        String compiledClassesBaseDir= projectMetaData.compiledClassesBaseDir();
+        Path basePath= Paths.get(compiledClassesBaseDir);
+        if(!Files.isDirectory(basePath)) {
+            logger.error("Not a directory :{}", compiledClassesBaseDir);
             return;
         }
-        Stream.of(new File(entitiesPath).listFiles())
-                .filter(file -> file.getName().endsWith(".class"))
-                .forEach(cClass-> doEntityDirtyCheck(entitiesPath,cClass.getName().split("\\.")[0]));
+        try {
+            Files.walk(basePath)
+                    .filter(path -> Files.isRegularFile(path) && path.getFileName().toString().endsWith(".class"))
+                    .forEach(file -> {
+                        String relativePath = basePath.relativize(file).toString();
+                        StringBuilder classQualifiedNameBuilder=new StringBuilder();
+                        int lastDotIndex=0;
+                        for(int i=0;i<relativePath.length();i++)
+                        {
+                            char c=relativePath.charAt(i);
+                            if(c=='.')
+                                break;
+                            else if(c==File.separatorChar) {
+                                classQualifiedNameBuilder.append(".");
+                                lastDotIndex=i;
+                            }
+                            else
+                                classQualifiedNameBuilder.append(c);
+                        }
+                        if (classQualifiedNameBuilder.substring(0,lastDotIndex).equals(projectMetaData.entitiesPackage()))
+                            doEntityDirtyCheck(compiledClassesBaseDir,classQualifiedNameBuilder.toString());
+                    });
+        } catch (IOException e) {
+            logger.error("Unable to detect classes from base dire {} and base package {} due to ",compiledClassesBaseDir,projectMetaData.entitiesPackage(),e);
+        }
         cleanUpExit(1);
     }
 
-    public void doEntityDirtyCheck(String entitiesPath, String fileName) {
+    public void doEntityDirtyCheck(String entitiesPath, String classQualifiedName) {
         URL[] urls ;
         try{
             urls=new URL[]{Paths.get(entitiesPath).toUri().toURL()};
@@ -95,10 +129,10 @@ public class ChangesDetector {
 
         Class<?> loadedClass ;
         try (URLClassLoader classLoader = new URLClassLoader(urls)){
-            loadedClass= classLoader.loadClass(fileName);
+            loadedClass= classLoader.loadClass(classQualifiedName);
         }catch (Exception exception)
         {
-            logger.error("Unable to load class with name {} from path {}",fileName,entitiesPath,exception);
+            logger.error("Unable to load class with name {} from path {}",classQualifiedName,entitiesPath,exception);
             return;
         }
         if(!isEntity(loadedClass))

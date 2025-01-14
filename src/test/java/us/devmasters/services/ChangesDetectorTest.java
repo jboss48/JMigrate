@@ -1,15 +1,15 @@
 package us.devmasters.services;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import us.devmasters.entities.newtable.NewEntity;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.URL;
 import java.nio.file.Files;
@@ -17,14 +17,14 @@ import java.nio.file.Path;
 import java.util.Properties;
 import java.util.stream.Stream;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 
 class ChangesDetectorTest {
 
-    ChangesDetector changesDetector;
+     ChangesDetector changesDetector;
      MySQLContainer<?> mysqlContainer;
-
+    Logger logger= LoggerFactory.getLogger(ChangesDetectorTest.class);
      Path resultDir;
 
     @BeforeEach
@@ -49,31 +49,34 @@ class ChangesDetectorTest {
         properties.setProperty("url","jdbc:mysql://localhost:"+mysqlContainer.getMappedPort(3306)+"/"+dbName);
         properties.setProperty("user",username);
         properties.setProperty("password",password);
-        changesDetector=new ChangesDetector(properties,new MigrationWriter(),resultDir.toString(),new SqlGenerator());
+        changesDetector=new ChangesDetector(properties,new MigrationWriter(),resultDir.toString(),new SqlGenerator(),true);
     }
 
     @Test
     void testDetectNewTable() throws IOException {
+        // arrange
         URL testClassesPath = NewEntity.class.getProtectionDomain().getCodeSource().getLocation();
-        String newEntityPath=testClassesPath.getPath()+NewEntity.class.getPackage().getName().replace('.', File.separatorChar);
+        ProjectMetaData projectMetaData=new ProjectMetaData(testClassesPath.getPath(),NewEntity.class.getPackage().getName());
+
         //act
+        changesDetector.detect(projectMetaData);
 
-        changesDetector.detect(newEntityPath);
+        // resultDir will only contain a single migration file
+        //assert
         try (Stream<Path> paths = Files.list(resultDir)) {
-            paths.forEach(path -> {
-                if (Files.isRegularFile(path)) { // Only process regular files
-                    try {
-                        String content = new String(Files.readAllBytes(path));
-                        System.out.println("File: " + path.getFileName());
-                        System.out.println("Content: " + content);
-                        System.out.println("------");
-                    } catch (IOException e) {
-                        System.err.println("Failed to read file: " + path.getFileName());
-                        e.printStackTrace();
-                    }
-                }
-            });
-
+            Path migrationPath=paths.findFirst().get();
+            try {
+                 String actual = new String(Files.readAllBytes(migrationPath));
+                 String expected="""
+                         create table if not exists new_entity (\n
+                         id BIGINT primary key auto_increment,\n
+                         label varchar(255) not null\n
+                         );\n""";
+                 assertEquals(expected,actual);
+            }
+            catch (IOException e) {
+                logger.error("Failed to read file: {}" , migrationPath.getFileName(),e);
+            }
         }
     }
     @AfterEach
